@@ -10,6 +10,7 @@ from itertools import count
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from multiprocessing import Lock
 import itertools
+import sys
 
 @contextmanager
 def profile(section_name):
@@ -51,8 +52,7 @@ def save_sample_to_tar(row_index, batch_index, shard_index, images, texts, tar_f
             temp_files.append(image_filename)
             image_counter += 1
             img_data_list.append((img_data, image_filename))
-            print(image_filename)
-        elif text is not None:  
+        elif text is not None:
             interleaved.append({"text": text})
         else:
             return
@@ -137,10 +137,6 @@ async def download_images(image_urls, texts, tar_file_path, batch_index):
                 all_images[row_idx][col_idx] = image_data
         
     with profile("Save to webdataset"):
-        # tasks = []
-        # for row_index, (images, texts_row) in enumerate(zip(all_images, texts)):
-            # tasks.append(save_sample_to_tar(row_index, batch_index, 0, images, texts_row, tar_file_path))
-        # await asyncio.gather(*tasks)
         loop = asyncio.get_running_loop()
         await save_batch_with_multiprocessing(loop, batch_index, 0, all_images, texts, tar_file_path)    
     return all_images
@@ -151,12 +147,10 @@ def async_batch_processing(image_urls, text_list, batch_index):
     result = asyncio.run(download_images(image_urls, text_list, 'obelics-webdataset/sample.tar', batch_index))
     return result
 
-import sys
 
 def update_dataset(batch):
     batch_index = next(batch_counter)
     processed_images = async_batch_processing(batch['images'], batch['texts'], batch_index)
-    sys.exit()
     return {'images': processed_images}
 
 import resource
@@ -169,9 +163,12 @@ def increase_file_descriptor_limit():
 
 increase_file_descriptor_limit()
 
-os.remove('/home/ajay.meena/obelics/obelics-webdataset/sample.tar')
+try:
+    os.remove('/home/ajay.meena/obelics/obelics-webdataset/sample.tar')
+except OSError:
+    pass
 
-dataset = dataset.map(update_dataset, batched=True, batch_size=100)
+dataset = dataset.map(update_dataset, batched=True, batch_size=1000)
 
 
 dataset.save_to_disk('processed_dataset')
