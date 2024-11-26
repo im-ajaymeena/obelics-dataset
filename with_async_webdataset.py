@@ -33,7 +33,7 @@ import asyncio
 
 MAX_CONCURRENT_REQUESTS = 2000
 MAX_CONNECTIONS = 300
-MAX_PROCESS_WORKER = 20
+MAX_PROCESS_WORKER = 40
 
 def save_sample_to_tar(row_index, batch_index, shard_index, images, texts, tar_file_path, tar_file_lock):
     """Save a single dataset row directly into a tar file."""
