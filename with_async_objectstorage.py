@@ -6,9 +6,15 @@ from contextlib import contextmanager
 import os, json
 from itertools import count
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import argparse
+import tarfile
+from tqdm import tqdm
 
 @contextmanager
 def profile(section_name):
+    if args.disable_profiling:
+        yield
+        return
     start = time.perf_counter()
     yield
     end = time.perf_counter()
@@ -23,6 +29,8 @@ async def fetch_image(url, session):
     except Exception as e:
         return None
 
+shard_save_dir = None
+
 import aiohttp
 import asyncio
 
@@ -30,7 +38,7 @@ MAX_CONCURRENT_REQUESTS = 2000
 MAX_CONNECTIONS = 300
 MAX_PROCESS_WORKER = 40
 
-def save_sample_to_tar(row_index, batch_index, shard_index, images, texts):
+def save_sample_to_tar(row_index, batch_index, images, texts):
     """Save a single dataset row directly into a tar file."""
     # try:
     # Interleaved metadata creation
@@ -39,7 +47,7 @@ def save_sample_to_tar(row_index, batch_index, shard_index, images, texts):
     temp_files = []  # Keep track of temporary files to clean up
     img_data_list = []
 
-    output_dir = f"obelics-object-storage/{shard_index:04}/{batch_index:04}"
+    output_dir = f"{shard_save_dir}/{batch_index:04}"
     os.makedirs(output_dir, exist_ok=True)
 
     for i, (img_data, text) in enumerate(zip(images, texts)):
@@ -66,7 +74,7 @@ def save_sample_to_tar(row_index, batch_index, shard_index, images, texts):
     
     return
 
-async def save_batch_with_multiprocessing(loop, batch_index, shard_index, images, texts):
+async def save_batch_with_multiprocessing(loop, batch_index, images, texts):
     """Process a batch using multiprocessing within asyncio."""
     with ThreadPoolExecutor(max_workers=MAX_PROCESS_WORKER) as executor:
         tasks = [
@@ -75,7 +83,6 @@ async def save_batch_with_multiprocessing(loop, batch_index, shard_index, images
                 save_sample_to_tar,
                 row_index,
                 batch_index,
-                shard_index,
                 images[row_index],
                 texts[row_index],
             )
@@ -125,7 +132,7 @@ async def download_images(image_urls, texts, batch_index):
         
     with profile("Save to webdataset"):
         loop = asyncio.get_running_loop()
-        await save_batch_with_multiprocessing(loop, batch_index, 0, all_images, texts)    
+        await save_batch_with_multiprocessing(loop, batch_index, all_images, texts)    
     return all_images
 
 batch_counter = count(0)
@@ -150,5 +157,35 @@ def increase_file_descriptor_limit():
 
 increase_file_descriptor_limit()
 
-dataset = Dataset.from_file("obelics-train-00000-of-01439.arrow")
+def create_flat_tar(root_dir, tar_filename):
+    all_files = []
+    for root, _, files in os.walk(root_dir):
+        for file in files:
+            full_path = os.path.join(root, file)
+            all_files.append(full_path)
+    
+    with tarfile.open(tar_filename, "w") as tar:
+        for file in tqdm(all_files):
+            tar.add(file, arcname=os.path.basename(file))
+
+    print(f"Created tar file: {tar_filename}")
+    print(f"Total files added: {len(all_files)}")
+
+
+parser = argparse.ArgumentParser(description="Process an arrow file.")
+parser.add_argument("--arrow_file", type=str, required=False, default="obelics-train-00002-of-01439.arrow", help="Path to the .arrow file")
+parser.add_argument("--disable_profiling", action="store_true", help="Disable profiling for the script")
+args = parser.parse_args()
+
+arrow_file = args.arrow_file
+shard_index = arrow_file.split('-')[2]
+shard_save_dir = f"obelics-object-storage/{shard_index:05}"
+os.makedirs(shard_save_dir, exist_ok=True)
+
+dataset = Dataset.from_file(arrow_file)
+
 dataset = dataset.map(update_dataset, batched=True, batch_size=1000)
+
+tarfile_path = f"obelics-web-dataset/{shard_index:05}.tar"
+os.makedirs(os.path.dirname(tarfile_path), exist_ok=True)
+create_flat_tar(shard_save_dir, tarfile_path)
